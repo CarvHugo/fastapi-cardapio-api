@@ -1,12 +1,18 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-import sqlite3
 from pydantic import BaseModel
 from typing import Optional
+import os
 
-from banco_de_dados import garantir_tabela_produtos, buscar_produtos
+from banco_de_dados import garantir_tabela_produtos, buscar_produtos, cadastra_produtos, tenta_delecao, consulta_produto, atualiza_produto
 
 app = FastAPI()
+
+API_KEY = os.getenv("API_KEY")
+
+def valida_api_key(x_api_key: str):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="API key inválida!")
 
 @app.on_event("startup")
 def inicializar_banco():
@@ -49,89 +55,47 @@ async def listar_produtos():
     return lista_produtos
 
 @app.post("/produtos")
-async def cadastro_de_produtos(produto: Produto):
-    produto.nome = produto.nome.strip()
-    produto.categoria = produto.categoria.strip()
+async def cadastro_de_produtos(produto: Produto, x_api_key: str = Header()):
+    valida_api_key(x_api_key)
     
-    if produto.nome != "" and produto.categoria != "" and produto.preco > 0:
-        conexao = sqlite3.connect("cardapio.db")
-        cursor = conexao.cursor()
-        
-        cursor.execute("INSERT INTO produtos (nome, categoria, preco) VALUES (?, ?, ?)", (produto.nome, produto.categoria, produto.preco))
-
-        conexao.commit()
-        conexao.close()
-
-        return produto
+    if not produto.nome or not produto.categoria or produto.preco <= 0:
+        raise HTTPException(status_code=422, detail="Ocorreu um erro com a validação dos dados! Digite dados válidos para cadastro.")
     
-    raise HTTPException(status_code=422, detail="Ocorreu um erro com a validação dos dados! Digite dados válidos para cadastro.")
+    produto = cadastra_produtos(produto.nome, produto.categoria, produto.preco)
+    
+    return produto
 
 @app.delete("/produtos/{id}")
-async def delecao_de_produtos(id: int):
-    conexao = sqlite3.connect("cardapio.db")
-    cursor = conexao.cursor()
+async def delecao_de_produtos(id: int, x_api_key: str = Header()):
+    valida_api_key(x_api_key)
     
-    cursor.execute("SELECT * FROM produtos WHERE id = ?", (id,))
-    verificador_de_linha = cursor.fetchone()
+    delecao = tenta_delecao(id)
     
-    if verificador_de_linha is not None:
-        cursor.execute("DELETE FROM produtos WHERE id = ?", (id,))
-        
-        conexao.commit()
-        conexao.close()
-        return {"message": f'{id} deletado!'}
-    
-    conexao.close()
-    
-    raise HTTPException(status_code=404, detail=f"Deleção falhou! O produto de ID {id} não foi encontrado.")
+    if delecao is None:
+        raise HTTPException(status_code=404, detail=f"Deleção falhou! O produto de ID {id} não foi encontrado.")
+
+    return delecao
 
 @app.patch("/produtos/{id}")
-async def atualizar_produto(id: int, produtopatch: ProdutoPatch):
-    conexao = sqlite3.connect("cardapio.db")
-    cursor = conexao.cursor()
+async def atualizar_produto(id: int, produtopatch: ProdutoPatch, x_api_key: str = Header()):
+    valida_api_key(x_api_key)
     
-    if (produtopatch.nome, produtopatch.categoria, produtopatch.preco).count(None) == 3:
-        conexao.close()
+    atualizacao = atualiza_produto(id, produtopatch.nome, produtopatch.categoria, produtopatch.preco)
+    
+    if atualizacao == None:
         raise HTTPException(status_code=422, detail="É necessário fornecer algum dado para atualização!")
     
-    linhas_afetadas = 0
-        
-    if produtopatch.nome is not None:
-        cursor.execute("UPDATE produtos SET nome = ? WHERE id = ?", (produtopatch.nome, id))
-        linhas_afetadas += cursor.rowcount
-            
-    if produtopatch.categoria is not None:
-        cursor.execute("UPDATE produtos SET categoria = ? WHERE id = ?", (produtopatch.categoria, id))
-        linhas_afetadas += cursor.rowcount
-            
-    if produtopatch.preco is not None:
-        cursor.execute("UPDATE produtos SET preco = ? WHERE id = ?", (produtopatch.preco, id))
-        linhas_afetadas += cursor.rowcount
-    
-    if linhas_afetadas == 0:
-        conexao.close()
+    if atualizacao == False:
         raise HTTPException(status_code=404, detail=f"Erro! ID {id} não encontrado.")
     
-    conexao.commit()
-    conexao.close()
+    return atualizacao
+
     
 @app.get("/produtos/{id}")
 async def consultar_produto(id: int):
-    conexao = sqlite3.connect("cardapio.db")
-    cursor = conexao.cursor()
+    produto = consulta_produto(id)
     
-    cursor.execute("SELECT nome, categoria, preco FROM produtos WHERE id = ?;", (id,))
-    produto = cursor.fetchone()
+    if produto is None:
+        raise HTTPException(status_code=404, detail=f'Produto de ID {id} não encontrado!')
     
-    if produto:
-        nome, categoria, preco = produto
-        dados = {}
-        
-        dados['Nome'] = nome
-        dados['Categoria'] = categoria
-        dados['Preço'] = preco
-        
-        return dados
-    
-    else:
-        raise HTTPException(status_code=404, detail=f'Número de ID {id} não encontrado!')
+    return produto
